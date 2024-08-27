@@ -7,6 +7,7 @@ from typing import Any, Literal, TypedDict
 
 from auto_editor.ffwrapper import initFileInfo
 from auto_editor.lang.json import dump
+from auto_editor.make_layers import make_sane_timebase
 from auto_editor.timeline import v3
 from auto_editor.utils.func import aspect_ratio
 from auto_editor.utils.log import Log
@@ -46,7 +47,7 @@ class VideoJson(TypedDict):
 class AudioJson(TypedDict):
     codec: str
     samplerate: int
-    channels: int
+    layout: str
     duration: float
     bitrate: int
     lang: str | None
@@ -68,6 +69,7 @@ class MediaJson(TypedDict, total=False):
     subtitle: list[SubtitleJson]
     container: ContainerJson
     type: Literal["media", "timeline", "unknown"]
+    recommendedTimebase: str
     version: Literal["v1", "v3"]
     clips: int
 
@@ -81,7 +83,7 @@ def main(sys_args: list[str] = sys.argv[1:]) -> None:
 
     for file in args.input:
         if not os.path.isfile(file):
-            log.nofile(file)
+            log.error(f"Could not find '{file}'")
 
         ext = os.path.splitext(file)[1]
         if ext == ".json":
@@ -108,6 +110,7 @@ def main(sys_args: list[str] = sys.argv[1:]) -> None:
 
         file_info[file] = {
             "type": "media",
+            "recommendedTimebase": "30/1",
             "video": [],
             "audio": [],
             "subtitle": [],
@@ -116,6 +119,12 @@ def main(sys_args: list[str] = sys.argv[1:]) -> None:
                 "bitrate": src.bitrate,
             },
         }
+
+        if src.videos:
+            recTb = make_sane_timebase(src.videos[0].fps)
+            file_info[file]["recommendedTimebase"] = (
+                f"{recTb.numerator}/{recTb.denominator}"
+            )
 
         for track, v in enumerate(src.videos):
             w, h = v.width, v.height
@@ -141,8 +150,8 @@ def main(sys_args: list[str] = sys.argv[1:]) -> None:
         for track, a in enumerate(src.audios):
             aud: AudioJson = {
                 "codec": a.codec,
+                "layout": a.layout,
                 "samplerate": a.samplerate,
-                "channels": a.channels,
                 "duration": a.duration,
                 "bitrate": a.bitrate,
                 "lang": a.lang,

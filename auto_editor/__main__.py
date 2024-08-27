@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
 
 import sys
+from os import environ
 
 import auto_editor
-from auto_editor.utils.func import setup_tempdir
+from auto_editor.edit import edit_media
+from auto_editor.ffwrapper import FFmpeg
 from auto_editor.utils.log import Log
 from auto_editor.utils.types import (
     Args,
@@ -137,10 +139,7 @@ def main_options(parser: ArgumentParser) -> ArgumentParser:
     )
     parser.add_text("Utility Options:")
     parser.add_argument(
-        "--export",
-        "-ex",
-        metavar="EXPORT:ATTRS?",
-        help="Choose the export mode",
+        "--export", "-ex", metavar="EXPORT:ATTRS?", help="Choose the export mode"
     )
     parser.add_argument(
         "--output-file",
@@ -150,15 +149,10 @@ def main_options(parser: ArgumentParser) -> ArgumentParser:
         help="Set the name/path of the new output file.",
     )
     parser.add_argument(
-        "--player",
-        "-p",
-        metavar="CMD",
-        help="Set player to open output media files",
+        "--player", "-p", metavar="CMD", help="Set player to open output media files"
     )
     parser.add_argument(
-        "--no-open",
-        flag=True,
-        help="Do not open the output file after editing is done",
+        "--no-open", flag=True, help="Do not open the output file after editing is done"
     )
     parser.add_argument(
         "--temp-dir",
@@ -252,7 +246,7 @@ def main_options(parser: ArgumentParser) -> ArgumentParser:
     parser.add_argument(
         "--audio-normalize",
         metavar="NORM-TYPE",
-        help="Apply audio rendering to all audio tracks. Applied right before rendering the output file.",
+        help="Apply audio rendering to all audio tracks. Applied right before rendering the output file",
     )
     parser.add_text("Miscellaneous:")
     parser.add_argument(
@@ -264,6 +258,12 @@ def main_options(parser: ArgumentParser) -> ArgumentParser:
         "--extras",
         metavar="CMD",
         help="Add extra options for ffmpeg. Must be in quotes",
+    )
+    parser.add_argument(
+        "--config", flag=True, help="When set, look for `config.pal` and run it"
+    )
+    parser.add_argument(
+        "--no-cache", flag=True, help="Don't look for or write a cache file"
     )
     parser.add_argument("--version", "-V", flag=True, help="Display version and halt")
     return parser
@@ -277,11 +277,16 @@ def main() -> None:
             f"auto_editor.subcommands.{sys.argv[1]}", fromlist=["subcommands"]
         )
         obj.main(sys.argv[2:])
-        sys.exit()
+        return
+
+    ff_color = "AV_LOG_FORCE_NOCOLOR"
+    no_color = bool(environ.get("NO_COLOR")) or bool(environ.get(ff_color))
+    log = Log(no_color=no_color)
 
     args = main_options(ArgumentParser("Auto-Editor")).parse_args(
         Args,
         sys.argv[1:],
+        log,
         macros=[
             ({"--frame-margin"}, ["--margin"]),
             ({"--export-to-premiere", "-exp"}, ["--export", "premiere"]),
@@ -295,41 +300,38 @@ def main() -> None:
     )
 
     if args.version:
-        print(f"{auto_editor.version} ({auto_editor.__version__})")
-        sys.exit()
+        print(auto_editor.__version__)
+        return
 
-    from auto_editor.edit import edit_media
-    from auto_editor.ffwrapper import FFmpeg
+    if args.debug and not args.input:
+        import platform as plat
 
-    log = Log(args.debug, args.quiet)
+        import av
+
+        license = av._core.library_meta["libavcodec"]["license"]
+
+        print(f"OS: {plat.system()} {plat.release()} {plat.machine().lower()}")
+        print(f"Python: {plat.python_version()}")
+        print(f"PyAV: {av.__version__} ({license})")
+        print(f"Auto-Editor: {auto_editor.__version__}")
+        return
+
+    if not args.input:
+        log.error("You need to give auto-editor an input file.")
+
+    is_machine = args.progress == "machine"
+    log = Log(args.debug, args.quiet, args.temp_dir, is_machine, no_color)
+
     ffmpeg = FFmpeg(
         args.ffmpeg_location,
         args.my_ffmpeg,
         args.show_ffmpeg_commands,
         args.show_ffmpeg_output,
     )
-
-    if args.debug and args.input == []:
-        import platform as plat
-
-        is64bit = "64-bit" if sys.maxsize > 2**32 else "32-bit"
-        print(f"Python Version: {plat.python_version()} {is64bit}")
-        print(f"Platform: {plat.system()} {plat.release()} {plat.machine().lower()}")
-        print(f"FFmpeg Version: {ffmpeg.version}\nFFmpeg Path: {ffmpeg.path}")
-        print(f"Auto-Editor Version: {auto_editor.version}")
-        sys.exit()
-
-    if args.input == []:
-        log.error("You need to give auto-editor an input file.")
-
-    temp = setup_tempdir(args.temp_dir, Log())
-    log = Log(args.debug, args.quiet, temp=temp)
-    log.debug(f"Temp Directory: {temp}")
-
     paths = valid_input(args.input, ffmpeg, args, log)
 
     try:
-        edit_media(paths, ffmpeg, args, temp, log)
+        edit_media(paths, ffmpeg, args, log)
     except KeyboardInterrupt:
         log.error("Keyboard Interrupt")
     log.cleanup()

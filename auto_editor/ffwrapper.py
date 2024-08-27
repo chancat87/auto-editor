@@ -11,6 +11,8 @@ from shutil import which
 from subprocess import PIPE, Popen
 from typing import Any
 
+import av
+
 from auto_editor.utils.func import get_stdout
 from auto_editor.utils.log import Log
 
@@ -147,6 +149,7 @@ class VideoStream:
 class AudioStream:
     codec: str
     samplerate: int
+    layout: str
     channels: int
     duration: float
     bitrate: int
@@ -190,12 +193,12 @@ class FileInfo:
 
 
 def initFileInfo(path: str, log: Log) -> FileInfo:
-    import av
-
-    av.logging.set_level(av.logging.PANIC)
-
     try:
         cont = av.open(path, "r")
+    except av.error.FileNotFoundError:
+        log.error(f"Input file doesn't exist: {path}")
+    except av.error.IsADirectoryError:
+        log.error(f"Expected a media file, but got a directory: {path}")
     except av.error.InvalidDataError:
         log.error(f"Invalid data when processing: {path}")
 
@@ -217,6 +220,10 @@ def initFileInfo(path: str, log: Log) -> FileInfo:
 
         sar = Fraction(1) if v.sample_aspect_ratio is None else v.sample_aspect_ratio
         cc = v.codec_context
+
+        if v.name is None:
+            log.error(f"Can't detect codec for video stream {v}")
+
         videos += (
             VideoStream(
                 v.width,
@@ -226,7 +233,7 @@ def initFileInfo(path: str, log: Log) -> FileInfo:
                 vdur,
                 sar,
                 v.time_base,
-                cc.pix_fmt,
+                getattr(v.format, "name", None),
                 cc.color_range,
                 cc.colorspace,
                 cc.color_primaries,
@@ -246,6 +253,7 @@ def initFileInfo(path: str, log: Log) -> FileInfo:
             AudioStream(
                 a_cc.name,
                 0 if a_cc.sample_rate is None else a_cc.sample_rate,
+                a.layout.name,
                 a_cc.channels,
                 adur,
                 0 if a_cc.bit_rate is None else a_cc.bit_rate,

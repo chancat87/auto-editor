@@ -4,7 +4,11 @@ import os.path
 from dataclasses import dataclass, field
 from fractions import Fraction
 
+import av
+from av.audio.resampler import AudioResampler
+
 from auto_editor.ffwrapper import FFmpeg, FileInfo
+from auto_editor.utils.bar import Bar
 from auto_editor.utils.container import Container
 from auto_editor.utils.log import Log
 from auto_editor.utils.types import Args
@@ -13,44 +17,75 @@ from auto_editor.utils.types import Args
 @dataclass(slots=True)
 class Ensure:
     _ffmpeg: FFmpeg
+    _bar: Bar
     _sr: int
-    temp: str
     log: Log
-    labels: list[tuple[FileInfo, int]] = field(default_factory=list)
-    sub_labels: list[tuple[FileInfo, int]] = field(default_factory=list)
+    _audios: list[tuple[FileInfo, int]] = field(default_factory=list)
+    _subtitles: list[tuple[FileInfo, int, str]] = field(default_factory=list)
 
     def audio(self, src: FileInfo, stream: int) -> str:
         try:
-            label = self.labels.index((src, stream))
+            label = self._audios.index((src, stream))
             first_time = False
         except ValueError:
-            self.labels.append((src, stream))
-            label = len(self.labels) - 1
+            self._audios.append((src, stream))
+            label = len(self._audios) - 1
             first_time = True
 
-        out_path = os.path.join(self.temp, f"{label:x}.wav")
+        out_path = os.path.join(self.log.temp, f"{label:x}.wav")
 
         if first_time:
-            self.log.conwrite("Extracting audio")
+            sample_rate = self._sr
+            bar = self._bar
+            self.log.debug(f"Making external audio: {out_path}")
 
-            cmd = ["-i", f"{src.path}", "-map", f"0:a:{stream}"]
-            cmd += ["-ac", "2", "-ar", f"{self._sr}", "-rf64", "always", out_path]
-            self._ffmpeg.run(cmd)
+            in_container = av.open(src.path, "r")
+            out_container = av.open(
+                out_path, "w", format="wav", options={"rf64": "always"}
+            )
+            astream = in_container.streams.audio[stream]
+
+            if astream.duration is None or astream.time_base is None:
+                dur = 1
+            else:
+                dur = int(astream.duration * astream.time_base)
+
+            bar.start(dur, "Extracting audio")
+
+            # PyAV always uses "stereo" layout, which is what we want.
+            output_astream = out_container.add_stream("pcm_s16le", rate=sample_rate)
+            assert isinstance(output_astream, av.audio.stream.AudioStream)
+
+            resampler = AudioResampler(format="s16", layout="stereo", rate=sample_rate)
+            for i, frame in enumerate(in_container.decode(astream)):
+                if i % 1500 == 0:
+                    bar.tick(0 if frame.time is None else frame.time)
+
+                for new_frame in resampler.resample(frame):
+                    for packet in output_astream.encode(new_frame):
+                        out_container.mux_one(packet)
+
+            for packet in output_astream.encode():
+                out_container.mux_one(packet)
+
+            out_container.close()
+            in_container.close()
+            bar.end()
 
         return out_path
 
-    def subtitle(self, src: FileInfo, stream: int) -> str:
+    def subtitle(self, src: FileInfo, stream: int, ext: str) -> str:
         try:
-            label = self.sub_labels.index((src, stream))
+            self._subtitles.index((src, stream, ext))
             first_time = False
         except ValueError:
-            self.sub_labels.append((src, stream))
-            label = len(self.sub_labels) - 1
+            self._subtitles.append((src, stream, ext))
             first_time = True
 
-        out_path = os.path.join(self.temp, f"{label:x}.vtt")
+        out_path = os.path.join(self.log.temp, f"{stream}s.{ext}")
 
         if first_time:
+            self.log.debug(f"Making external subtitle: {out_path}")
             self.log.conwrite("Extracting subtitle")
             self._ffmpeg.run(["-i", f"{src.path}", "-map", f"0:s:{stream}", out_path])
 
@@ -63,7 +98,7 @@ def _ffset(option: str, value: str | None) -> list[str]:
     return [option] + [value]
 
 
-def video_quality(args: Args, ctr: Container) -> list[str]:
+def video_quality(args: Args) -> list[str]:
     return (
         _ffset("-b:v", args.video_bitrate)
         + ["-c:v", args.video_codec]
@@ -83,7 +118,6 @@ def mux_quality_media(
     tb: Fraction,
     args: Args,
     src: FileInfo,
-    temp: str,
     log: Log,
 ) -> None:
     v_tracks = len(visual_output)
@@ -106,7 +140,7 @@ def mux_quality_media(
                 cmd.extend(["-i", path])
         else:
             # Merge all the audio a_tracks into one.
-            new_a_file = os.path.join(temp, "new_audio.wav")
+            new_a_file = os.path.join(log.temp, "new_audio.wav")
             if a_tracks > 1:
                 new_cmd = []
                 for path in audio_output:
@@ -138,7 +172,7 @@ def mux_quality_media(
     for is_video, path in visual_output:
         if is_video:
             if apply_v:
-                cmd += video_quality(args, ctr)
+                cmd += video_quality(args)
             else:
                 # Real video is only allowed on track 0
                 cmd += ["-c:v:0", "copy"]
@@ -175,7 +209,7 @@ def mux_quality_media(
             cmd.extend(["-c:s", scodec])
         elif ctr.scodecs is not None:
             if scodec not in ctr.scodecs:
-                scodec = ctr.scodecs[0]
+                scodec = ctr.default_sub
             cmd.extend(["-c:s", scodec])
 
     if a_tracks > 0:
@@ -191,7 +225,7 @@ def mux_quality_media(
             cmd.extend(["-color_range", f"{color_range}"])
         if colorspace in (0, 1) or (colorspace >= 3 and colorspace < 16):
             cmd.extend(["-colorspace", f"{colorspace}"])
-        if color_prim in (0, 1) or (color_prim >= 4 and color_prim < 17):
+        if color_prim == 1 or (color_prim >= 4 and color_prim < 17):
             cmd.extend(["-color_primaries", f"{color_prim}"])
         if color_trc == 1 or (color_trc >= 4 and color_trc < 22):
             cmd.extend(["-color_trc", f"{color_trc}"])

@@ -4,7 +4,6 @@ import difflib
 import re
 import sys
 import textwrap
-from collections.abc import Iterator
 from dataclasses import dataclass
 from io import StringIO
 from shutil import get_terminal_size
@@ -14,7 +13,7 @@ from auto_editor.utils.log import Log
 from auto_editor.utils.types import CoerceError
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import Callable, Iterator
     from typing import Any, Literal, TypeVar
 
     T = TypeVar("T")
@@ -119,7 +118,7 @@ def to_key(op: Options | Required) -> str:
     return op.names[0][:2].replace("-", "") + op.names[0][2:].replace("-", "_")
 
 
-def print_option_help(program_name: str | None, ns_obj: T, option: Options) -> None:
+def print_option_help(name: str | None, ns_obj: object, option: Options) -> None:
     text = StringIO()
     text.write(
         f"  {', '.join(option.names)} {'' if option.metavar is None else option.metavar}\n\n"
@@ -145,8 +144,8 @@ def print_option_help(program_name: str | None, ns_obj: T, option: Options) -> N
 
     from auto_editor.help import data
 
-    if program_name is not None and option.names[0] in data[program_name]:
-        text.write(indent(data[program_name][option.names[0]], "    ") + "\n")
+    if name is not None and option.names[0] in data[name]:
+        text.write(indent(data[name][option.names[0]], "    ") + "\n")
     else:
         text.write(f"    {option.help}\n\n")
 
@@ -158,25 +157,6 @@ def get_option(name: str, options: list[Options]) -> Options | None:
         if name in option.names or name in map(to_underscore, option.names):
             return option
     return None
-
-
-def parse_value(option: Options | Required, val: str | None) -> Any:
-    if val is None and option.nargs == 1:
-        Log().error(f"{option.names[0]} needs argument.")
-
-    try:
-        value = option.type(val)
-    except CoerceError as e:
-        Log().error(e)
-
-    if option.choices is not None and value not in option.choices:
-        choices = ", ".join(option.choices)
-
-        Log().error(
-            f"{value} is not a choice for {option.names[0]}\nchoices are:\n  {choices}"
-        )
-
-    return value
 
 
 class ArgumentParser:
@@ -201,6 +181,7 @@ class ArgumentParser:
         self,
         ns_obj: type[T],
         sys_args: list[str],
+        log_: Log | None = None,
         macros: list[tuple[set[str], list[str]]] | None = None,
     ) -> T:
         if not sys_args and self.program_name is not None:
@@ -219,8 +200,25 @@ class ArgumentParser:
             del _macros
         del macros
 
+        log = Log() if log_ is None else log_
         ns = ns_obj()
         option_names: list[str] = []
+
+        def parse_value(option: Options | Required, val: str | None) -> Any:
+            if val is None and option.nargs == 1:
+                log.error(f"{option.names[0]} needs argument.")
+
+            try:
+                value = option.type(val)
+            except CoerceError as e:
+                log.error(e)
+
+            if option.choices is not None and value not in option.choices:
+                log.error(
+                    f"{value} is not a choice for {option.names[0]}\n"
+                    f"choices are:\n  {', '.join(option.choices)}"
+                )
+            return value
 
         program_name = self.program_name
         requireds = self.requireds
@@ -256,7 +254,7 @@ class ArgumentParser:
                         val = oplist_coerce(arg)
                         ns.__setattr__(oplist_name, getattr(ns, oplist_name) + [val])
                     except (CoerceError, ValueError) as e:
-                        Log().error(e)
+                        log.error(e)
                 elif requireds and not arg.startswith("--"):
                     if requireds[0].nargs == 1:
                         ns.__setattr__(req_list_name, parse_value(requireds[0], arg))
@@ -268,19 +266,19 @@ class ArgumentParser:
 
                     # 'Did you mean' message might appear that options need a comma.
                     if arg.replace(",", "") in option_names:
-                        Log().error(f"Option '{arg}' has an unnecessary comma.")
+                        log.error(f"Option '{arg}' has an unnecessary comma.")
 
                     close_matches = difflib.get_close_matches(arg, option_names)
                     if close_matches:
-                        Log().error(
+                        log.error(
                             f"Unknown {label}: {arg}\n\n    Did you mean:\n        "
                             + ", ".join(close_matches)
                         )
-                    Log().error(f"Unknown {label}: {arg}")
+                    log.error(f"Unknown {label}: {arg}")
             else:
                 if option.nargs != "*":
                     if option in used_options:
-                        Log().error(
+                        log.error(
                             f"Option {option.names[0]} may not be used more than once."
                         )
                     used_options.append(option)

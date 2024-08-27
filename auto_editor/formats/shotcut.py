@@ -9,7 +9,6 @@ from auto_editor.utils.func import aspect_ratio, to_timecode
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
-    from auto_editor.ffwrapper import FFmpeg
     from auto_editor.timeline import TlAudio, TlVideo
     from auto_editor.utils.log import Log
 
@@ -22,7 +21,7 @@ https://mltframework.org/docs/mltxml/
 """
 
 
-def shotcut_read_mlt(path: str, ffmpeg: FFmpeg, log: Log) -> v3:
+def shotcut_read_mlt(path: str, log: Log) -> v3:
     raise NotImplementedError
 
 
@@ -92,7 +91,7 @@ def shotcut_write_mlt(output: str, tl: v3) -> None:
 
     for clip in clips:
         src = clip.src
-        length = to_timecode((clip.offset / clip.speed + clip.dur) / tb, "standard")
+        length = to_timecode((clip.offset + clip.dur) / tb, "standard")
 
         if clip.speed == 1:
             resource = f"{src.path}"
@@ -127,8 +126,8 @@ def shotcut_write_mlt(output: str, tl: v3) -> None:
 
     producers = 0
     for i, clip in enumerate(clips):
-        _in = to_timecode(clip.offset / clip.speed / tb, "standard")
-        _out = to_timecode((clip.offset / clip.speed + clip.dur) / tb, "standard")
+        _in = to_timecode(clip.offset / tb, "standard")
+        _out = to_timecode((clip.offset + clip.dur) / tb, "standard")
 
         tag_name = f"chain{i}"
         if clip.speed != 1:

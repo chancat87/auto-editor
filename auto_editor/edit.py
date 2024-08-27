@@ -15,7 +15,7 @@ from auto_editor.utils.bar import Bar
 from auto_editor.utils.chunks import Chunk, Chunks
 from auto_editor.utils.cmdkw import ParserError, parse_with_palet, pAttr, pAttrs
 from auto_editor.utils.container import Container, container_constructor
-from auto_editor.utils.log import Log, Timer
+from auto_editor.utils.log import Log
 from auto_editor.utils.types import Args
 
 
@@ -68,12 +68,8 @@ def set_video_codec(
 ) -> str:
     if codec == "auto":
         codec = "h264" if (src is None or not src.videos) else src.videos[0].codec
-        if ctr.vcodecs is not None:
-            if ctr.vstrict and codec not in ctr.vcodecs:
-                return ctr.vcodecs[0]
-
-            if codec in ctr.disallow_v:
-                return ctr.vcodecs[0]
+        if codec not in ctr.vcodecs and ctr.default_vid != "none":
+            return ctr.default_vid
         return codec
 
     if codec == "copy":
@@ -83,12 +79,7 @@ def set_video_codec(
             log.error("Input file does not have a video stream to copy codec from.")
         codec = src.videos[0].codec
 
-    if ctr.vstrict:
-        assert ctr.vcodecs is not None
-        if codec not in ctr.vcodecs:
-            log.error(codec_error.format(codec, out_ext))
-
-    if codec in ctr.disallow_v:
+    if ctr.vcodecs is not None and codec not in ctr.vcodecs:
         log.error(codec_error.format(codec, out_ext))
 
     return codec
@@ -99,8 +90,10 @@ def set_audio_codec(
 ) -> str:
     if codec == "auto":
         codec = "aac" if (src is None or not src.audios) else src.audios[0].codec
-        if ctr.acodecs is not None and codec not in ctr.acodecs:
-            return ctr.acodecs[0]
+        if codec not in ctr.acodecs and ctr.default_aud != "none":
+            return ctr.default_aud
+        if codec == "mp3float":
+            return "mp3"
         return codec
 
     if codec == "copy":
@@ -149,10 +142,7 @@ def parse_export(export: str, log: Log) -> dict[str, Any]:
     log.error(f"'{name}': Export must be [{', '.join([s for s in parsing.keys()])}]")
 
 
-def edit_media(
-    paths: list[str], ffmpeg: FFmpeg, args: Args, temp: str, log: Log
-) -> None:
-    timer = Timer(args.quiet)
+def edit_media(paths: list[str], ffmpeg: FFmpeg, args: Args, log: Log) -> None:
     bar = Bar(args.progress)
     tl = None
 
@@ -161,7 +151,7 @@ def edit_media(
         if path_ext == ".xml":
             from auto_editor.formats.fcp7 import fcp7_read_xml
 
-            tl = fcp7_read_xml(paths[0], ffmpeg, log)
+            tl = fcp7_read_xml(paths[0], log)
             assert tl.src is not None
             sources: list[FileInfo] = [tl.src]
             src: FileInfo | None = tl.src
@@ -169,7 +159,7 @@ def edit_media(
         elif path_ext == ".mlt":
             from auto_editor.formats.shotcut import shotcut_read_mlt
 
-            tl = shotcut_read_mlt(paths[0], ffmpeg, log)
+            tl = shotcut_read_mlt(paths[0], log)
             assert tl.src is not None
             sources = [tl.src]
             src = tl.src
@@ -191,7 +181,6 @@ def edit_media(
 
     if export["export"] == "timeline":
         log.quiet = True
-        timer.quiet = True
 
     if not args.preview:
         log.conwrite("Starting")
@@ -211,19 +200,8 @@ def edit_media(
     else:
         samplerate = args.sample_rate
 
-    ensure = Ensure(ffmpeg, samplerate, temp, log)
-
     if tl is None:
-        # Extract subtitles in their native format.
-        if src is not None and len(src.subtitles) > 0 and not args.sn:
-            cmd = ["-i", f"{src.path}", "-hide_banner"]
-            for s, sub in enumerate(src.subtitles):
-                cmd.extend(["-map", f"0:s:{s}"])
-            for s, sub in enumerate(src.subtitles):
-                cmd.extend([os.path.join(temp, f"{s}s.{sub.ext}")])
-            ffmpeg.run(cmd)
-
-        tl = make_timeline(sources, ffmpeg, ensure, args, samplerate, bar, temp, log)
+        tl = make_timeline(sources, args, samplerate, bar, log)
 
     if export["export"] == "timeline":
         from auto_editor.formats.json import make_json_timeline
@@ -234,7 +212,7 @@ def edit_media(
     if args.preview:
         from auto_editor.preview import preview
 
-        preview(ensure, tl, temp, log)
+        preview(tl, log)
         return
 
     if export["export"] == "json":
@@ -283,20 +261,21 @@ def edit_media(
         sub_output = []
         apply_later = False
 
-        if ctr.allow_subtitle and not args.sn:
-            sub_output = make_new_subtitles(tl, ffmpeg, temp, log)
+        ensure = Ensure(ffmpeg, bar, samplerate, log)
+        if ctr.default_sub != "none" and not args.sn:
+            sub_output = make_new_subtitles(tl, ensure, log.temp)
 
-        if ctr.allow_audio:
-            audio_output = make_new_audio(tl, ensure, args, ffmpeg, bar, temp, log)
+        if ctr.default_aud != "none":
+            audio_output = make_new_audio(tl, ensure, args, ffmpeg, bar, log)
 
-        if ctr.allow_video:
+        if ctr.default_vid != "none":
             if tl.v:
-                out_path, apply_later = render_av(ffmpeg, tl, args, bar, ctr, temp, log)
+                out_path, apply_later = render_av(ffmpeg, tl, args, bar, ctr, log)
                 visual_output.append((True, out_path))
 
             for v, vid in enumerate(src.videos, start=1):
                 if ctr.allow_image and vid.codec in ("png", "mjpeg", "webp"):
-                    out_path = os.path.join(temp, f"{v}.{vid.codec}")
+                    out_path = os.path.join(log.temp, f"{v}.{vid.codec}")
                     # fmt: off
                     ffmpeg.run(["-i", f"{src.path}", "-map", "0:v", "-map", "-0:V",
                         "-c", "copy", out_path])
@@ -315,7 +294,6 @@ def edit_media(
             tl.tb,
             args,
             src,
-            temp,
             log,
         )
 
@@ -358,7 +336,7 @@ def edit_media(
     else:
         make_media(tl, output)
 
-    timer.stop()
+    log.stop_timer()
 
     if not args.no_open and export["export"] in ("default", "audio", "clip-sequence"):
         if args.player is None:

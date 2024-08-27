@@ -166,7 +166,7 @@ def apply_audio_normalization(
 
 
 def make_new_audio(
-    tl: v3, ensure: Ensure, args: Args, ffmpeg: FFmpeg, bar: Bar, temp: str, log: Log
+    tl: v3, ensure: Ensure, args: Args, ffmpeg: FFmpeg, bar: Bar, log: Log
 ) -> list[str]:
     sr = tl.sr
     tb = tl.tb
@@ -176,6 +176,7 @@ def make_new_audio(
     norm = parse_norm(args.audio_normalize, log)
 
     af_tick = 0
+    temp = log.temp
 
     if not tl.a or not tl.a[0]:
         log.error("Trying to render empty audio timeline")
@@ -208,8 +209,8 @@ def make_new_audio(
                 del leng
 
             samp_list = samples[(clip.src, clip.stream)]
-            samp_start = clip.offset * sr // tb
-            samp_end = round((clip.offset + clip.dur * clip.speed) * sr / tb)
+            samp_start = round(clip.offset * clip.speed * sr / tb)
+            samp_end = round((clip.offset + clip.dur) * clip.speed * sr / tb)
             if samp_end > len(samp_list):
                 samp_end = len(samp_list)
 

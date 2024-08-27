@@ -12,18 +12,14 @@ from fractions import Fraction
 from functools import reduce
 from io import StringIO
 from operator import add, ge, gt, is_, le, lt, mod, mul
+from subprocess import run
 from time import sleep
 from typing import TYPE_CHECKING
 
 import numpy as np
 from numpy import logical_and, logical_not, logical_or, logical_xor
 
-from auto_editor.analyze import (
-    LevelError,
-    mut_remove_large,
-    mut_remove_small,
-    to_threshold,
-)
+from auto_editor.analyze import LevelError, mut_remove_large, mut_remove_small
 from auto_editor.lib.contracts import *
 from auto_editor.lib.data_structs import *
 from auto_editor.lib.err import MyError
@@ -625,42 +621,36 @@ def make_array(dtype: Sym, size: int, v: int = 0) -> np.ndarray:
         raise MyError(f"number too large to be converted to {dtype}")
 
 
-def minclip(oarr: BoolList, _min: int) -> BoolList:
+def minclip(oarr: BoolList, _min: int, /) -> BoolList:
     arr = np.copy(oarr)
     mut_remove_small(arr, _min, replace=1, with_=0)
     return arr
 
 
-def mincut(oarr: BoolList, _min: int) -> BoolList:
+def mincut(oarr: BoolList, _min: int, /) -> BoolList:
     arr = np.copy(oarr)
     mut_remove_small(arr, _min, replace=0, with_=1)
     return arr
 
 
-def maxclip(oarr: BoolList, _min: int) -> BoolList:
+def maxclip(oarr: BoolList, _min: int, /) -> BoolList:
     arr = np.copy(oarr)
     mut_remove_large(arr, _min, replace=1, with_=0)
     return arr
 
 
-def maxcut(oarr: BoolList, _min: int) -> BoolList:
+def maxcut(oarr: BoolList, _min: int, /) -> BoolList:
     arr = np.copy(oarr)
     mut_remove_large(arr, _min, replace=0, with_=1)
     return arr
 
 
-def margin(a: int, b: Any, c: Any = None) -> BoolList:
-    if c is None:
-        check_args("margin", [a, b], (2, 2), (is_int, is_boolarr))
-        oarr = b
-        start, end = a, a
-    else:
-        check_args("margin", [a, b, c], (3, 3), (is_int, is_int, is_boolarr))
-        oarr = c
-        start, end = a, b
-
+def margin(oarr: BoolList, start: int, end: int | None = None, /) -> BoolList:
     arr = np.copy(oarr)
-    mut_margin(arr, start, end)
+    if end is None:
+        mut_margin(arr, start, start)
+    else:
+        mut_margin(arr, start, end)
     return arr
 
 
@@ -690,6 +680,9 @@ def palet_map(proc: Proc, seq: Any) -> Any:
         return Quoted(tuple(map(proc, seq.val)))
     if isinstance(seq, list | range):
         return list(map(proc, seq))
+    elif isinstance(seq, np.ndarray):
+        vectorized_proc = np.vectorize(proc)
+        return vectorized_proc(seq)
     return proc(seq)
 
 
@@ -755,12 +748,24 @@ def palet_assert(expr: object, msg: str | bool = False) -> None:
 
 
 def palet_system(cmd: str) -> bool:
-    import subprocess
-
     try:
-        return subprocess.run(cmd, shell=True).returncode == 0
+        return run(cmd, shell=True).returncode == 0
     except Exception:
         return False
+
+
+def palet_system_star(*cmd: str) -> bool:
+    try:
+        return run(cmd).returncode == 0
+    except Exception:
+        return False
+
+
+def change_file_ext(a, ext) -> str:
+    import os.path
+
+    base_name = os.path.splitext(a)[0]
+    return f"{base_name}.{ext}" if ext else base_name
 
 
 ###############################################################################
@@ -1469,18 +1474,38 @@ def edit_all() -> np.ndarray:
     return env["@levels"].all()
 
 
+def audio_levels(stream: int) -> np.ndarray:
+    if "@levels" not in env:
+        raise MyError("Can't use `audio` if there's no input media")
+
+    try:
+        return env["@levels"].audio(stream)
+    except LevelError as e:
+        raise MyError(e)
+
+
+def motion_levels(stream: int, blur: int = 9, width: int = 400) -> np.ndarray:
+    if "@levels" not in env:
+        raise MyError("Can't use `motion` if there's no input media")
+
+    try:
+        return env["@levels"].motion(stream, blur, width)
+    except LevelError as e:
+        raise MyError(e)
+
+
 def edit_audio(
     threshold: float = 0.04,
     stream: object = Sym("all"),
     mincut: int = 6,
     minclip: int = 3,
 ) -> np.ndarray:
-    if "@levels" not in env or "@filesetup" not in env:
+    if "@levels" not in env:
         raise MyError("Can't use `audio` if there's no input media")
 
     levels = env["@levels"]
-    src = env["@filesetup"].src
-    strict = env["@filesetup"].strict
+    src = levels.src
+    strict = levels.strict
 
     stream_data: NDArray[np.bool_] | None = None
     if stream == Sym("all"):
@@ -1491,7 +1516,7 @@ def edit_audio(
 
     try:
         for s in stream_range:
-            audio_list = to_threshold(levels.audio(s), threshold)
+            audio_list = levels.audio(s) >= threshold
             if stream_data is None:
                 stream_data = audio_list
             else:
@@ -1519,11 +1544,10 @@ def edit_motion(
         raise MyError("Can't use `motion` if there's no input media")
 
     levels = env["@levels"]
-    strict = env["@filesetup"].strict
     try:
-        return to_threshold(levels.motion(stream, blur, width), threshold)
+        return levels.motion(stream, blur, width) >= threshold
     except LevelError as e:
-        return raise_(e) if strict else levels.all()
+        return raise_(e) if levels.strict else levels.all()
 
 
 def edit_subtitle(pattern, stream=0, **kwargs):
@@ -1531,7 +1555,6 @@ def edit_subtitle(pattern, stream=0, **kwargs):
         raise MyError("Can't use `subtitle` if there's no input media")
 
     levels = env["@levels"]
-    strict = env["@filesetup"].strict
     if "ignore-case" not in kwargs:
         kwargs["ignore-case"] = False
     if "max-count" not in kwargs:
@@ -1541,7 +1564,7 @@ def edit_subtitle(pattern, stream=0, **kwargs):
     try:
         return levels.subtitle(pattern, stream, ignore_case, max_count)
     except LevelError as e:
-        return raise_(e) if strict else levels.all()
+        return raise_(e) if levels.strict else levels.all()
 
 
 def my_eval(env: Env, node: object) -> Any:
@@ -1582,7 +1605,7 @@ def my_eval(env: Env, node: object) -> Any:
                     return ref(oper, my_eval(env, node[1]))
 
             raise MyError(
-                f"Tried to run: {print_str(oper)} with args: {print_str(node[1:])}"
+                f"{print_str(oper)} is not a function. Tried to run with args: {print_str(node[1:])}"
             )
 
         if type(oper) is Syntax:
@@ -1614,13 +1637,15 @@ env.update({
     "true": True,
     "false": False,
     "all": Sym("all"),
-    # edit procedures
+    # builtin edit procedures
     "none": Proc("none", edit_none, (0, 0)),
     "all/e": Proc("all/e", edit_all, (0, 0)),
+    "audio-levels": Proc("audio-levels", audio_levels, (1, 1), is_nat),
     "audio": Proc("audio", edit_audio, (0, 4),
         is_threshold, orc(is_nat, Sym("all")), is_nat,
         {"threshold": 0, "stream": 1, "minclip": 2, "mincut": 2}
     ),
+    "motion-levels": Proc("motion-levels", motion_levels, (1, 3), is_nat, is_nat1, {"blur": 1, "width": 2}),
     "motion": Proc("motion", edit_motion, (0, 4),
         is_threshold, is_nat, is_nat1,
         {"threshold": 0, "stream": 1, "blur": 1, "width": 2}
@@ -1721,6 +1746,8 @@ env.update({
     "round": Proc("round", round, (1, 1), is_real),
     "max": Proc("max", lambda *v: max(v), (1, None), is_real),
     "min": Proc("min", lambda *v: min(v), (1, None), is_real),
+    "max-seq": Proc("max-seq", max, (1, 1), is_sequence),
+    "min-seq": Proc("min-seq", min, (1, 1), is_sequence),
     "mod": Proc("mod", mod, (2, 2), is_int),
     "modulo": Proc("modulo", mod, (2, 2), is_int),
     # symbols
@@ -1739,6 +1766,7 @@ env.update({
     "lower": Proc("lower", str.lower, (1, 1), is_str),
     "upper": Proc("upper", str.upper, (1, 1), is_str),
     "join": Proc("join", palet_join, (2, 2), is_vector, is_str),
+    "change-file-ext": Proc("change-file-ext", change_file_ext, (2, 2), is_str),
     # format
     "char->int": Proc("char->int", lambda c: ord(c.val), (1, 1), is_char),
     "int->char": Proc("int->char", Char, (1, 1), is_int),
@@ -1776,7 +1804,7 @@ env.update({
     "bool-array": Proc(
         "bool-array", lambda *a: np.array(a, dtype=np.bool_), (1, None), is_nat
     ),
-    "margin": Proc("margin", margin, (2, 3)),
+    "margin": Proc("margin", margin, (2, 3), is_boolarr, is_int),
     "mincut": Proc("mincut", mincut, (2, 2), is_boolarr, is_nat),
     "minclip": Proc("minclip", minclip, (2, 2), is_boolarr, is_nat),
     "maxcut": Proc("maxcut", maxcut, (2, 2), is_boolarr, is_nat),
@@ -1824,6 +1852,7 @@ env.update({
     "error": Proc("error", raise_, (1, 1), is_str),
     "sleep": Proc("sleep", sleep, (1, 1), is_int_or_float),
     "system": Proc("system", palet_system, (1, 1), is_str),
+    "system*": Proc("system*", palet_system_star, (1, None), is_str),
     # conversions
     "number->string": Proc("number->string", number_to_string, (1, 1), is_num),
     "string->vector": Proc(

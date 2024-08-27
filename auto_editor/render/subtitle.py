@@ -10,10 +10,9 @@ from auto_editor.utils.func import to_timecode
 if TYPE_CHECKING:
     from fractions import Fraction
 
-    from auto_editor.ffwrapper import FFmpeg
+    from auto_editor.output import Ensure
     from auto_editor.timeline import v3
     from auto_editor.utils.chunks import Chunks
-    from auto_editor.utils.log import Log
 
 
 @dataclass(slots=True)
@@ -50,7 +49,7 @@ class SubtitleParser:
         self.codec = codec
         self.contents = []
 
-        if codec == "ass":
+        if codec == "ass" or codec == "ssa":
             time_code = re.compile(r"(.*)(\d+:\d+:[\d.]+)(.*)(\d+:\d+:[\d.]+)(.*)")
         elif codec == "webvtt":
             time_code = re.compile(r"()(\d+:[\d.]+)( --> )(\d+:[\d.]+)(\n.*)")
@@ -122,26 +121,21 @@ class SubtitleParser:
             file.write(self.footer)
 
 
-def make_new_subtitles(tl: v3, ffmpeg: FFmpeg, temp: str, log: Log) -> list[str]:
+def make_new_subtitles(tl: v3, ensure: Ensure, temp: str) -> list[str]:
     if tl.v1 is None:
         return []
 
     new_paths = []
 
     for s, sub in enumerate(tl.v1.source.subtitles):
-        file_path = os.path.join(temp, f"{s}s.{sub.ext}")
         new_path = os.path.join(temp, f"new{s}s.{sub.ext}")
-
         parser = SubtitleParser(tl.tb)
 
-        if sub.codec in parser.supported_codecs:
-            with open(file_path, encoding="utf-8") as file:
-                parser.parse(file.read(), sub.codec)
-        else:
-            convert_path = os.path.join(temp, f"{s}s_convert.vtt")
-            ffmpeg.run(["-i", file_path, convert_path])
-            with open(convert_path, encoding="utf-8") as file:
-                parser.parse(file.read(), "webvtt")
+        ext = sub.ext if sub.codec in parser.supported_codecs else "vtt"
+        file_path = ensure.subtitle(tl.v1.source, s, ext)
+
+        with open(file_path, encoding="utf-8") as file:
+            parser.parse(file.read(), sub.codec)
 
         parser.edit(tl.v1.chunks)
         parser.write(new_path)

@@ -17,8 +17,6 @@ from auto_editor.utils.types import color
 if TYPE_CHECKING:
     from collections.abc import Iterator
 
-    from av.filter import FilterContext
-
     from auto_editor.ffwrapper import FFmpeg, FileInfo
     from auto_editor.timeline import v3
     from auto_editor.utils.bar import Bar
@@ -27,18 +25,10 @@ if TYPE_CHECKING:
     from auto_editor.utils.types import Args
 
 
-av.logging.set_level(av.logging.PANIC)
-
-
 @dataclass(slots=True)
 class VideoFrame:
     index: int
     src: FileInfo
-
-
-def link_nodes(*nodes: FilterContext) -> None:
-    for c, n in zip(nodes, nodes[1:]):
-        c.link_to(n)
 
 
 # From: github.com/PyAV-Org/PyAV/blob/main/av/video/frame.pyx
@@ -101,13 +91,12 @@ def make_image_cache(tl: v3) -> dict[tuple[FileInfo, int], np.ndarray]:
                     for frame in cn.decode(my_stream):
                         if obj.width != 0:
                             graph = av.filter.Graph()
-                            link_nodes(
+                            graph.link_nodes(
                                 graph.add_buffer(template=my_stream),
                                 graph.add("scale", f"{obj.width}:-1"),
                                 graph.add("buffersink"),
-                            )
-                            graph.push(frame)
-                            frame = graph.pull()
+                            ).vpush(frame)
+                            frame = graph.vpull()
                         img_cache[(obj.src, obj.width)] = frame.to_ndarray(
                             format="rgb24"
                         )
@@ -116,22 +105,17 @@ def make_image_cache(tl: v3) -> dict[tuple[FileInfo, int], np.ndarray]:
 
 
 def render_av(
-    ffmpeg: FFmpeg,
-    tl: v3,
-    args: Args,
-    bar: Bar,
-    ctr: Container,
-    temp: str,
-    log: Log,
+    ffmpeg: FFmpeg, tl: v3, args: Args, bar: Bar, ctr: Container, log: Log
 ) -> tuple[str, bool]:
     src = tl.src
-    cns: dict[FileInfo, av.InputContainer] = {}
+    cns: dict[FileInfo, av.container.InputContainer] = {}
     decoders: dict[FileInfo, Iterator[av.VideoFrame]] = {}
     seek_cost: dict[FileInfo, int] = {}
     tous: dict[FileInfo, int] = {}
 
     target_pix_fmt = "yuv420p"  # Reasonable default
     img_cache = make_image_cache(tl)
+    temp = log.temp
 
     first_src: FileInfo | None = None
     for src in tl.sources:
@@ -180,7 +164,7 @@ def render_av(
         target_width = max(round(tl.res[0] * args.scale), 2)
         target_height = max(round(tl.res[1] * args.scale), 2)
         scale_graph = av.filter.Graph()
-        link_nodes(
+        scale_graph.link_nodes(
             scale_graph.add(
                 "buffer", video_size="1x1", time_base="1/1", pix_fmt=target_pix_fmt
             ),
@@ -216,7 +200,7 @@ def render_av(
     if apply_video_later:
         cmd += ["-c:v", "mpeg4", "-qscale:v", "1"]
     else:
-        cmd += video_quality(args, ctr)
+        cmd += video_quality(args)
 
     # Setting SAR requires re-encoding so we do it here.
     if src is not None and src.videos and (sar := src.videos[0].sar) is not None:
@@ -244,7 +228,7 @@ def render_av(
                 for lobj in layer:
                     if isinstance(lobj, TlVideo):
                         if index >= lobj.start and index < (lobj.start + lobj.dur):
-                            _i = lobj.offset + round((index - lobj.start) * lobj.speed)
+                            _i = round((lobj.offset + index - lobj.start) * lobj.speed)
                             obj_list.append(VideoFrame(_i, lobj.src))
                     elif index >= lobj.start and index < lobj.start + lobj.dur:
                         obj_list.append(lobj)
@@ -296,7 +280,7 @@ def render_av(
                     if (frame.width, frame.height) != tl.res:
                         width, height = tl.res
                         graph = av.filter.Graph()
-                        link_nodes(
+                        graph.link_nodes(
                             graph.add_buffer(template=my_stream),
                             graph.add(
                                 "scale",
@@ -304,22 +288,20 @@ def render_av(
                             ),
                             graph.add("pad", f"{width}:{height}:-1:-1:color={bg}"),
                             graph.add("buffersink"),
-                        )
-                        graph.push(frame)
-                        frame = graph.pull()
+                        ).vpush(frame)
+                        frame = graph.vpull()
                 elif isinstance(obj, TlRect):
                     graph = av.filter.Graph()
                     x, y = apply_anchor(obj.x, obj.y, obj.width, obj.height, obj.anchor)
-                    link_nodes(
+                    graph.link_nodes(
                         graph.add_buffer(template=my_stream),
                         graph.add(
                             "drawbox",
                             f"x={x}:y={y}:w={obj.width}:h={obj.height}:color={obj.fill}:t=fill",
                         ),
                         graph.add("buffersink"),
-                    )
-                    graph.push(frame)
-                    frame = graph.pull()
+                    ).vpush(frame)
+                    frame = graph.vpull()
                 elif isinstance(obj, TlImage):
                     img = img_cache[(obj.src, obj.width)]
                     array = frame.to_ndarray(format="rgb24")
@@ -358,8 +340,8 @@ def render_av(
                     frame = av.VideoFrame.from_ndarray(array, format="rgb24")
 
             if scale_graph is not None and frame.width != target_width:
-                scale_graph.push(frame)
-                frame = scale_graph.pull()
+                scale_graph.vpush(frame)
+                frame = scale_graph.vpull()
 
             if frame.format.name != target_pix_fmt:
                 frame = frame.reformat(format=target_pix_fmt)

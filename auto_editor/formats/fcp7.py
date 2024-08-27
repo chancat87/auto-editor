@@ -7,7 +7,7 @@ from math import ceil
 from typing import TYPE_CHECKING
 from xml.etree.ElementTree import Element
 
-from auto_editor.ffwrapper import FFmpeg, FileInfo, initFileInfo
+from auto_editor.ffwrapper import FileInfo, initFileInfo
 from auto_editor.timeline import ASpace, TlAudio, TlVideo, VSpace, v3
 
 from .utils import Validator, show
@@ -177,7 +177,7 @@ def read_filters(clipitem: Element, log: Log) -> float:
     return 1.0
 
 
-def fcp7_read_xml(path: str, ffmpeg: FFmpeg, log: Log) -> v3:
+def fcp7_read_xml(path: str, log: Log) -> v3:
     def xml_bool(val: str) -> bool:
         if val == "TRUE":
             return True
@@ -188,7 +188,7 @@ def fcp7_read_xml(path: str, ffmpeg: FFmpeg, log: Log) -> v3:
     try:
         tree = ET.parse(path)
     except FileNotFoundError:
-        log.nofile(path)
+        log.error(f"Could not find '{path}'")
 
     root = tree.getroot()
 
@@ -296,7 +296,7 @@ def fcp7_read_xml(path: str, ffmpeg: FFmpeg, log: Log) -> v3:
 
                 start = clipitem["start"]
                 dur = clipitem["end"] - start
-                offset = int(clipitem["in"] * speed)
+                offset = clipitem["in"]
 
                 vobjs[t].append(
                     TlVideo(start, dur, sources[file_id], offset, speed, stream=0)
@@ -324,7 +324,7 @@ def fcp7_read_xml(path: str, ffmpeg: FFmpeg, log: Log) -> v3:
 
                 start = clipitem["start"]
                 dur = clipitem["end"] - start
-                offset = int(clipitem["in"] * speed)
+                offset = clipitem["in"]
 
                 aobjs[t].append(
                     TlAudio(
@@ -414,8 +414,8 @@ def fcp7_write_xml(name: str, output: str, tl: v3, log: Log) -> None:
 
             _start = f"{clip.start}"
             _end = f"{clip.start + clip.dur}"
-            _in = f"{int(clip.offset / clip.speed)}"
-            _out = f"{int(clip.offset / clip.speed) + clip.dur}"
+            _in = f"{clip.offset}"
+            _out = f"{clip.offset + clip.dur}"
 
             clipitem = ET.SubElement(track, "clipitem", id=f"clipitem-{j+1}")
             ET.SubElement(clipitem, "name").text = src.path.stem
@@ -473,8 +473,8 @@ def fcp7_write_xml(name: str, output: str, tl: v3, log: Log) -> None:
 
                 _start = f"{aclip.start}"
                 _end = f"{aclip.start + aclip.dur}"
-                _in = f"{int(aclip.offset / aclip.speed)}"
-                _out = f"{int(aclip.offset / aclip.speed) + aclip.dur}"
+                _in = f"{aclip.offset}"
+                _out = f"{aclip.offset + aclip.dur}"
 
                 if not src.videos:
                     clip_item_num = j + 1

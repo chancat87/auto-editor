@@ -1,15 +1,19 @@
 from __future__ import annotations
 
-from collections.abc import Callable
-from fractions import Fraction
+from typing import TYPE_CHECKING
 
 import numpy as np
-from numpy.typing import NDArray
 
-from auto_editor.utils.log import Log
+if TYPE_CHECKING:
+    from collections.abc import Callable
+    from fractions import Fraction
 
-BoolList = NDArray[np.bool_]
-BoolOperand = Callable[[BoolList, BoolList], BoolList]
+    from numpy.typing import NDArray
+
+    from auto_editor.utils.log import Log
+
+    BoolList = NDArray[np.bool_]
+    BoolOperand = Callable[[BoolList, BoolList], BoolList]
 
 
 def boolop(a: BoolList, b: BoolList, call: BoolOperand) -> BoolList:
@@ -23,26 +27,6 @@ def boolop(a: BoolList, b: BoolList, call: BoolOperand) -> BoolList:
         a = k
 
     return call(a, b)
-
-
-def setup_tempdir(temp: str | None, log: Log) -> str:
-    if temp is None:
-        import tempfile
-
-        return tempfile.mkdtemp()
-
-    import os.path
-    from os import listdir, mkdir
-
-    if os.path.isfile(temp):
-        log.error("Temp directory cannot be an already existing file.")
-    if os.path.isdir(temp):
-        if len(listdir(temp)) != 0:
-            log.error("Temp directory should be empty!")
-    else:
-        mkdir(temp)
-
-    return temp
 
 
 def to_timecode(secs: float | Fraction, fmt: str) -> str:
